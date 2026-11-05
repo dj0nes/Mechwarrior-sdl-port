@@ -3,17 +3,99 @@
 #include "mechwarrior/campaign_input.h"
 #include "mechwarrior/campaign_startup.h"
 #include "mechwarrior/ega_campaign.h"
+#include "mechwarrior/campaign_ui.h"
 #include <stdlib.h>
 #include <string.h>
 
 /* Host-installed device entry points, not game input decisions. */
 MwCampaignInputCalls mwCampaignInput;
 
+/* Port enhancement, not original behaviour: point-and-click menus. The 1989
+ * game only treats the mouse as a relative gesture device. With a visible host
+ * cursor, the record nearest the pointer becomes a hover target and the
+ * selection walks there through the menu's own links, one native arrow key
+ * per poll, so all original navigation/enable rules still apply. A click on a
+ * different record first walks there, then activates. */
+static MwUiMenu *hoverMenu;
+static int16_t hoverTarget=-1;
+static bool hoverClickPending;
+static uint16_t lastPointerX=UINT16_MAX,lastPointerY=UINT16_MAX;
+static bool RecordUsable(const MwUiMenu *menu,uint16_t index)
+{return index<menu->recordCount && menu->records[index].enabled;}
+static int16_t RecordNearestPointer(const MwUiMenu *menu,uint16_t x,uint16_t y)
+{
+    int16_t best=-1;uint32_t bestDistance=UINT32_MAX;
+    for (uint16_t i=0;i<menu->recordCount;++i)
+    {
+        if (!RecordUsable(menu,i)) continue;
+        int32_t dx=(int32_t)x-menu->records[i].x,dy=(int32_t)y-menu->records[i].y;
+        if (dx>0) dx/=3; /* anchors sit at the left of labels/icons */
+        uint32_t distance=(uint32_t)(dx*dx+4*dy*dy); /* rows matter more than columns */
+        if (distance>2500) continue; /* too far from any record: no hover */
+        if (distance<bestDistance) {bestDistance=distance;best=(int16_t)i;}
+    }
+    return best;
+}
+static bool FirstStepToward(const MwUiMenu *menu,uint16_t from,uint16_t to,uint16_t *key)
+{
+    static const uint16_t keys[4]={CAMPAIGN_KEY_UP,CAMPAIGN_KEY_DOWN,CAMPAIGN_KEY_LEFT,CAMPAIGN_KEY_RIGHT};
+    uint8_t firstKey[256];int16_t queue[256];bool seen[256]={0};uint16_t head=0,tail=0;
+    if (from>=menu->recordCount || menu->recordCount>256) return false;
+    seen[from]=true;queue[tail++]=(int16_t)from;
+    while (head<tail)
+    {
+        uint16_t at=(uint16_t)queue[head++];const MwUiRecord *r=&menu->records[at];
+        const uint8_t links[4]={r->upRecordIndex,r->downRecordIndex,r->leftRecordIndex,r->rightRecordIndex};
+        for (uint16_t k=0;k<4;++k)
+        {
+            uint8_t next=links[k];
+            if (!RecordUsable(menu,next) || seen[next]) continue;
+            seen[next]=true;firstKey[next]=at==from?(uint8_t)k:firstKey[at];
+            if (next==to) {*key=keys[firstKey[next]];return true;}
+            queue[tail++]=next;
+        }
+    }
+    return false;
+}
+static bool PollPointerMenu(uint16_t *navigationKey,bool clicked)
+{
+    if (!mwCampaignInput.readMousePosition) return false;
+    MwUiMenu *menu=uiMenu;
+    if (menu!=hoverMenu) {hoverMenu=menu;hoverTarget=-1;hoverClickPending=false;}
+    if (!menu || !menu->records || !menu->recordCount) return false;
+    uint16_t x,y;mwCampaignInput.readMousePosition(&x,&y);x>>=1; /* INT33 X is doubled */
+    if (clicked || x!=lastPointerX || y!=lastPointerY)
+    {
+        hoverTarget=RecordNearestPointer(menu,x,y);
+        if (clicked) hoverClickPending=hoverTarget>=0;
+    }
+    lastPointerX=x;lastPointerY=y;
+    if (hoverTarget<0) return false;
+    if ((uint16_t)hoverTarget==selectedUiRecordIndex)
+    {
+        hoverTarget=-1;
+        if (!hoverClickPending) return false;
+        hoverClickPending=false;*navigationKey=CAMPAIGN_KEY_ENTER;return true;
+    }
+    if (FirstStepToward(menu,selectedUiRecordIndex,(uint16_t)hoverTarget,navigationKey)) return true;
+    hoverTarget=-1;hoverClickPending=false;return false;
+}
+
 /* MW_MAIN081B:0E10..0E8E. INT33 release, then relative motion; X wins ties. */
 bool MwPollMouseNavigationKey(uint16_t *navigationKey)
 {
     if (mwCampaignInput.mouseReleaseCount==NULL) /* Port failsafe; not an original DOS exit. */ MW_PORT_FAILSAFE("Rejected condition: mwCampaignInput.mouseReleaseCount==NULL");
-    if (mwCampaignInput.mouseReleaseCount(MOUSE_BUTTON_LEFT)!=0)
+    bool clicked=mwCampaignInput.mouseReleaseCount(MOUSE_BUTTON_LEFT)!=0;
+    if (uiMenu)
+    {
+        uint16_t ignoredX,ignoredY; /* relative gesture motion is superseded */
+        if (mwCampaignInput.readMouseMotion) mwCampaignInput.readMouseMotion(&ignoredX,&ignoredY);
+        mouseMotionX=mouseMotionY=0;
+        if (PollPointerMenu(navigationKey,clicked)) return true;
+        if (clicked) { *navigationKey=CAMPAIGN_KEY_ENTER;return true; }
+        *navigationKey=0;return false;
+    }
+    if (clicked)
     { *navigationKey=CAMPAIGN_KEY_ENTER;return true; }
     if (mwCampaignInput.readMouseMotion==NULL) /* Port failsafe; not an original DOS exit. */ MW_PORT_FAILSAFE("Rejected condition: mwCampaignInput.readMouseMotion==NULL");
     uint16_t motionX,motionY;

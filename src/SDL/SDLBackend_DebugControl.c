@@ -61,8 +61,8 @@ static void PublishStatus(void)
         for(unsigned i=0;i<uiMenu->recordCount;++i)
         {
             const MwUiRecord *row=&uiMenu->records[i];
-            fprintf(file,"%s{\"index\":%u,\"enabled\":%u,\"callback\":%u,\"picture\":%u,\"links\":[%u,%u,%u,%u],\"label\":",
-                i?",":"",i,row->enabled,row->activateCodeOffset,row->pictureIndex,
+            fprintf(file,"%s{\"index\":%u,\"enabled\":%u,\"callback\":%u,\"picture\":%u,\"x\":%u,\"y\":%u,\"links\":[%u,%u,%u,%u],\"label\":",
+                i?",":"",i,row->enabled,row->activateCodeOffset,row->pictureIndex,row->x,row->y,
                 row->upRecordIndex,row->downRecordIndex,row->leftRecordIndex,row->rightRecordIndex);
             JsonString(file,row->textRecord?row->text:"");fputc('}',file);
         }
